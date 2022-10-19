@@ -1,0 +1,10 @@
+Flask
+Flask-PyMongo
+Flask-Session
+PyMongo
+python-dotenv
+Jinja2
+MarkupSafe
+Werkzeug
+passlib
+dnspython
