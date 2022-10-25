@@ -9,6 +9,7 @@ import pymongo
 import jwt
 from config import Config, db
 import datetime
+import uuid
 
 app = Flask("Congressional App Challenge")
 app.config.from_object(Config)
@@ -36,25 +37,6 @@ def verify_token(token):
         return {"error": "1", "message": "Signature expired. Please log in again."}
     except jwt.InvalidTokenError:
         return {"error": "2", "message": "Invalid token. Please log in again."}
-
-@app.route('/', methods=['GET'])
-def testing():
-    today = datetime.date.today().strftime("%m-%d-%Y") # May need to change based format from /getjournal date request
-    print(today)
-    return ""
-
-@app.route('/auth/token', methods=['POST'])
-def auth_verify_token():
-    token = request.args.get('token')
-    session_token = verify_token(str(session["logged_in_token"]))
-    result = verify_token(token)
-    if result["error"] == "0":
-        if session_token == result["token"]:
-            return {"error": "0", "message": "Correct Token"}
-        else:
-            return {"error": "3", "message": "Incorrect token. Please log in again."}
-    else:
-        return result
 
 @app.route('/api/login', methods=['POST'])
 def api_login():
@@ -138,6 +120,7 @@ def api_register():
         "goals": goals,
         "journal": {},
         "pet": "",
+        "last_miss": today.strftime("%m-%d-%Y")
     }
 
     if users.find_one({'username': username, 'email': email}) is None:
@@ -158,44 +141,126 @@ def api_register():
 
 @app.route('/api/addfood', methods=['POST'])
 def api_add_to_journal():
+    value = request.args.get('value')
+    verify = verify_token(value)
+    if verify["error"] != "0":
+        return jsonify({"error": verify["error"], "message": verify["message"]})
+    user_id = verify["token"]
+
     users = db['users']
-    user = users.find_one({'_id': ObjectId(session['logged_in_id'])})
+    user = users.find_one({'_id': ObjectId(user_id)})
     journal = user["journal"]
 
-    today = datetime.date.today().strftime("%Y-%m-%d").split("-") # May need to change based format from /getjournal date request
-    food = request.args.get('food')
-    servings = request.args.get('servings')
-    meal = request.args.get('meal')
+    print("Journal")
+    print(journal)
 
-    ## HOW DO I SORT AND STORE THE JOURNAL ##
+    today = datetime.date.today().strftime("%m-%d-%Y") # May need to change based format from /getjournal date request
+    food = request.get_json().get('food')
+    servings = request.get_json().get('servings')
+    meal = request.get_json().get('meal')
 
-    users.update_one({'_id': ObjectId(session['logged_in_id'])},{
+    if today not in journal:
+        journal[today] = []
+
+    # Saves each food in a journal with keys: description<str>, brand<str>, ingredients<str>, nutrients<dict>, servings<int>, meal<str>
+    nutrients = {}
+    for nutrient in food['foodNutrients']:
+        nutrients[nutrient['nutrientName'].lower()] = {"amount": nutrient['value'], "unit": nutrient['unitName']}
+    food_data = {
+        "description": food['lowercaseDescription'],
+        "brand": food['brandOwner'],
+        "ingredients": food['ingredients'],
+        "nutrients": nutrients,
+        "servings": servings,
+        "meal": meal,
+        }
+    journal[today].append(food_data)
+
+    users.update_one({'_id': ObjectId(user_id)},{
         '$set': {'journal': journal}
     })
+    return jsonify({"error": "0", "message": "Food Successfully Added"})
 
 @app.route('/api/getjournal', methods=['GET'])
-def api_get_journal():    
+def api_get_journal():
     users = db['users']
+    value = request.args.get('value')
+    verify = verify_token(value)
+    if verify["error"] != "0":
+        return jsonify({"error": verify["error"], "message": verify["message"]})
+    user_id = verify_token(value)["token"]
+    user = users.find_one({'_id': ObjectId(user_id)})
+
     date = request.args.get('date')
-    user = users.find_one({'_id': ObjectId(session['logged_in_id'])})
+
+    foods = []
+
     try:
         journal = user["journal"][str(date)]
-        return jsonify({"error": "0", "journal": journal})
+        for food in journal:
+            name = food["description"]
+            servings = food["servings"]
+            calories = round(food["nutrients"]["energy"]["amount"]*servings)
+            meal = food["meal"]
+            foods.append({"name": name, "calories": calories, "servings": servings, "meal": meal})
+        print(foods)
+        return jsonify({"error": "0", "journal": foods})
     except:
         return jsonify({"error": "1", "message": "No journal for this date"})
 
 @app.route('/api/getdashboard', methods=['GET'])
 def api_get_dashboard_info():
+    today = datetime.datetime.today().strftime("%m-%d-%Y")
     users = db['users']
-    user = users.find_one({'_id': ObjectId(session['logged_in_id'])})
-    today = datetime.date.today().strftime("%m-%d-%Y") # May need to change based format from /getjournal date request
-    today = datetime.date.today().strftime("%Y-%m-%d").split("-") # May need to change based format from /getjournal date request
+    value = request.args.get('value')
+    verify = verify_token(value)
+    if verify["error"] != "0":
+        return jsonify({"error": verify["error"], "message": verify["message"]})
+    user_id = verify_token(value)["token"]
+    user = users.find_one({'_id': ObjectId(user_id)})
 
-    journal = user["journal"][str(today)]
+    protein = 0
+    lipid = 0
+    carbohydrate = 0
+    energy = 0
+    water = 0
 
-    ## HOW DO I SORT AND STORE THE JOURNAL ##
+    goals = user["goals"]
 
-    return jsonify({"goals": user["goals"], "journal": journal})
+    journal = {}
+    try:
+        journal = user["journal"][str(today)]
+        for food in journal:
+            nutrient_list = food["nutrients"]
+            servings = food["servings"]
+            protein += nutrient_list["protein"]["amount"]*servings
+            lipid += nutrient_list["total lipid (fat)"]["amount"]*servings
+            carbohydrate += nutrient_list["carbohydrate, by difference"]["amount"]*servings
+            energy += nutrient_list["energy"]["amount"]*servings
+            print(nutrient_list)
+            print(servings)
+    except:
+        pass
+
+    # Determining Day
+    last_miss = datetime.datetime.strptime(user["last_miss"], "%m-%d-%Y")
+    today = datetime.datetime.today().strftime("%m-%d-%Y")
+    today = datetime.datetime.strptime(today, "%m-%d-%Y")
+    day = str(today-last_miss)
+    if "day" in day:
+        day = day.split(" ")[0]
+    else:
+        day = "0"
+
+    entries = {"Calories": round(energy/goals["calorie"],2), "Proteins": round(protein/goals["protein"],2), "Fat": round(lipid/goals["lipid"],2), "Carbs": round(carbohydrate/goals["carbohydrate"],2), "Water": round(water/goals["water"],2)}
+
+    return jsonify({"error": "0", "entries": entries, "day": day})
+
+@app.route('/api/logout', methods=["GET"])
+def api_logout():
+    session['logged_in'] = False
+    session['logged_in_id'] = ''
+    session['logged_in_token'] = ''
 
 if __name__ == "__main__":
     app.config['SECRET_KEY'] = '123qwi34iWge9era89F1393h3gwJ0q3'
