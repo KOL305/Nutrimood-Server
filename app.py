@@ -206,7 +206,7 @@ def api_get_journal():
         print(foods)
         return jsonify({"error": "0", "journal": foods})
     except:
-        return jsonify({"error": "1", "message": "No journal for this date"})
+        return jsonify({"error": "-1", "message": "No journal for this date"})
 
 @app.route('/api/getdashboard', methods=['GET'])
 def api_get_dashboard_info():
