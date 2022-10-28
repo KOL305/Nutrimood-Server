@@ -1,5 +1,6 @@
 from functools import wraps
 import math
+from operator import itemgetter
 from bson.objectid import ObjectId
 from flask import Flask, render_template, jsonify, request, redirect, session, abort, flash
 from flask_pymongo import PyMongo
@@ -120,7 +121,7 @@ def api_register():
         "goals": goals,
         "journal": {},
         "pet": "",
-        "last_miss": today.strftime("%m-%d-%Y")
+        "last_miss": today.strftime("%m-%d-%Y"),
     }
 
     if users.find_one({'username': username, 'email': email}) is None:
@@ -141,7 +142,7 @@ def api_register():
 
 @app.route('/api/addfood', methods=['POST'])
 def api_add_to_journal():
-    value = request.args.get('value')
+    value = request.headers.get('authorization')
     verify = verify_token(value)
     if verify["error"] != "0":
         return jsonify({"error": verify["error"], "message": verify["message"]})
@@ -159,20 +160,38 @@ def api_add_to_journal():
     servings = request.get_json().get('servings')
     meal = request.get_json().get('meal')
 
+    if meal == "Breakfast":
+        meal_index = 0
+    elif meal == "Lunch":
+        meal_index = 1
+    elif meal == "Dinner":
+        meal_index = 2
+    elif meal == "Snack":
+        meal_index = 3
+    elif meal == "Water":
+        meal_index = 4
+
     if today not in journal:
         journal[today] = []
 
     # Saves each food in a journal with keys: description<str>, brand<str>, ingredients<str>, nutrients<dict>, servings<int>, meal<str>
     nutrients = {}
+    nutrients["energy"] = {"amount": 0, "unit": "KCAL"}
+    nutrients["protein"] = {"amount": 0, "unit": "G"}
+    nutrients["total lipid (fat)"] = {"amount": 0, "unit": "G"}
+    nutrients["carbohydrate, by difference"] = {"amount": 0, "unit": "G"}
     for nutrient in food['foodNutrients']:
-        nutrients[nutrient['nutrientName'].lower()] = {"amount": nutrient['value'], "unit": nutrient['unitName']}
+        nutrients[str(nutrient['nutrientName'].lower())] = {"amount": nutrient['value'], "unit": nutrient['unitName']}
     food_data = {
         "description": food['lowercaseDescription'],
         "brand": food['brandOwner'],
         "ingredients": food['ingredients'],
         "nutrients": nutrients,
         "servings": servings,
+        "serving_size": food['servingSize'],
+        "serving_units": food['servingSizeUnit'],
         "meal": meal,
+        "meal_index": meal_index,
         }
     journal[today].append(food_data)
 
@@ -184,7 +203,7 @@ def api_add_to_journal():
 @app.route('/api/getjournal', methods=['GET'])
 def api_get_journal():
     users = db['users']
-    value = request.args.get('value')
+    value = request.headers.get('authorization')
     verify = verify_token(value)
     if verify["error"] != "0":
         return jsonify({"error": verify["error"], "message": verify["message"]})
@@ -193,26 +212,37 @@ def api_get_journal():
 
     date = request.args.get('date')
 
-    foods = []
+    print(date)
 
+    foods = []
     try:
         journal = user["journal"][str(date)]
+        print(journal)
         for food in journal:
             name = food["description"]
             servings = food["servings"]
             calories = round(food["nutrients"]["energy"]["amount"]*servings)
             meal = food["meal"]
-            foods.append({"name": name, "calories": calories, "servings": servings, "meal": meal})
+            meal_index = food["meal_index"]
+            foods.append({"name": name, "calories": calories, "servings": servings, "meal": meal, "meal_index": meal_index})
         print(foods)
-        return jsonify({"error": "0", "journal": foods})
+        try:
+            foods_sorted = sorted(foods, key=itemgetter('meal_index'), reverse=True)
+            return jsonify({"error": "0", "journal": foods_sorted})
+        except:
+            return jsonify({"error": "0", "journal": foods})
+        print(foods) 
+        
     except:
+        print("hello")
         return jsonify({"error": "-1", "message": "No journal for this date"})
 
 @app.route('/api/getdashboard', methods=['GET'])
 def api_get_dashboard_info():
     today = datetime.datetime.today().strftime("%m-%d-%Y")
     users = db['users']
-    value = request.args.get('value')
+    value = request.headers.get('authorization')
+
     verify = verify_token(value)
     if verify["error"] != "0":
         return jsonify({"error": verify["error"], "message": verify["message"]})
@@ -237,22 +267,62 @@ def api_get_dashboard_info():
             lipid += nutrient_list["total lipid (fat)"]["amount"]*servings
             carbohydrate += nutrient_list["carbohydrate, by difference"]["amount"]*servings
             energy += nutrient_list["energy"]["amount"]*servings
+            if food["meal"] == "Water":
+                water += food["serving_size"]*servings
             print(nutrient_list)
             print(servings)
     except:
         pass
 
+    entries = {"Calories": round(energy/goals["calorie"],2), "Proteins": round(protein/goals["protein"],2), "Fat": round(lipid/goals["lipid"],2), "Carbs": round(carbohydrate/goals["carbohydrate"],2), "Water": round(water/goals["water"],2)}
+
     # Determining Day
     last_miss = datetime.datetime.strptime(user["last_miss"], "%m-%d-%Y")
+    
     today = datetime.datetime.today().strftime("%m-%d-%Y")
     today = datetime.datetime.strptime(today, "%m-%d-%Y")
+    yesterday = (datetime.datetime.today() - datetime.timedelta(days = 1)).strftime("%m-%d-%Y").split(" ")[0]
+
     day = str(today-last_miss)
     if "day" in day:
-        day = day.split(" ")[0]
+        day = str(int(day.split(" ")[0])+1)
     else:
-        day = "0"
+        day = "1"
 
-    entries = {"Calories": round(energy/goals["calorie"],2), "Proteins": round(protein/goals["protein"],2), "Fat": round(lipid/goals["lipid"],2), "Carbs": round(carbohydrate/goals["carbohydrate"],2), "Water": round(water/goals["water"],2)}
+    print(yesterday)
+
+    last_journal = {}
+    last_protein = 0
+    last_lipid = 0
+    last_carbohydrate = 0
+    last_energy = 0
+    last_water = 0
+    try:
+        last_journal = user["journal"][str(yesterday)]
+        print(last_journal)
+        for food in last_journal:
+            nutrient_list = food["nutrients"]
+            servings = food["servings"]
+            last_protein += nutrient_list["protein"]["amount"]*servings
+            last_lipid += nutrient_list["total lipid (fat)"]["amount"]*servings
+            last_carbohydrate += nutrient_list["carbohydrate, by difference"]["amount"]*servings
+            last_energy += nutrient_list["energy"]["amount"]*servings
+            if food["meal"] == "Water":
+                last_water += food["serving_size"]*servings
+            print(nutrient_list)
+            print(servings)
+
+        last_entries = {"Calories": round(last_energy/goals["calorie"],2), "Proteins": round(last_protein/goals["protein"],2), "Fat": round(last_lipid/goals["lipid"],2), "Carbs": round(last_carbohydrate/goals["carbohydrate"],2), "Water": round(last_water/goals["water"],2)}
+
+        average = (last_entries['Calories']+ last_entries['Proteins']+last_entries['Carbs']+last_entries['Fat'])/4
+        if average <= .3 or average >= 1.7:
+            print(last_miss)
+            users.update_one({'_id': ObjectId(user_id)},{
+                '$set': {'last_miss': today.strftime("%m-%d-%Y")}
+            })
+            day = "1"
+    except:
+        pass
 
     return jsonify({"error": "0", "entries": entries, "day": day})
 
