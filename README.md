@@ -1,4 +1,6 @@
 # Nutrimood - Server
+Mobile nutritional tracker app created for the 2022 Congressional App Challenge
+
 Mobile App:
 - https://github.com/KOL305/congressional_app_challenge_mobile
 
